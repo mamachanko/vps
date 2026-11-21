@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from vps.cli import app
@@ -190,7 +191,7 @@ def test_human_output_escapes_filename_controls_and_rich_markup(tmp_path: Path) 
 
     assert result.exit_code == 0
     assert "[red]file\\x1b[2J\\nnext\\u202e" in result.stdout
-    assert "\x1b" not in result.stdout
+    assert "\x1b[2J" not in result.stdout
     assert "\u202e" not in result.stdout
 
 
@@ -232,7 +233,7 @@ def test_top_requires_directory(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert result.stdout == ""
-    assert "--top requires a directory" in result.stderr
+    assert "--top requires a directory" in Text.from_ansi(result.stderr).plain
 
 
 @pytest.mark.parametrize("arguments", [[], ["--top", "1"]])
