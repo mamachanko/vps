@@ -1,4 +1,5 @@
 import sys
+from contextlib import nullcontext
 from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated
@@ -54,8 +55,15 @@ def disk(
     ] = False,
 ) -> None:
     """Show filesystem capacity, with an optional allocated-space scan."""
+    progress_console = Console(stderr=True)
+    progress = (
+        progress_console.status("Scanning disk usage...", spinner="line")
+        if top is not None and sys.stderr.isatty() and progress_console.is_interactive
+        else nullcontext()
+    )
     try:
-        report = inspect_disk(path, top)
+        with progress:
+            report = inspect_disk(path, top)
     except OSError as error:
         if top is not None and isinstance(error, NotADirectoryError):
             raise typer.BadParameter(
