@@ -1,135 +1,174 @@
 # vps
 
-`vps` is a read-only command-line utility for Unix servers. Check disk usage
-or review the hardening baseline on a Linux VPS.
+See what's filling a filesystem and which hardening checks need attention.
+`vps` is a read-only CLI you can run directly on a server over SSH.
 
-## Run from a checkout
+| Command | What it shows | Where it runs |
+| --- | --- | --- |
+| `vps disk` | Filesystem capacity and, with `--top`, the largest entries in a directory | Linux and macOS |
+| `vps audit` | An OpenSCAP assessment against a CIS Level 1 Server profile by default | Linux with OpenSCAP and matching benchmark content |
+| `vps audit --fast` | Five local checks for SSH, network listeners, firewall policy, and updates | Linux |
 
-Use [uv](https://docs.astral.sh/uv/) on Linux or macOS with Python 3.11 or newer.
-Run these commands from the repository root.
+## Quick start
+
+Install uv and use Python 3.11 or newer. Run these commands on the machine you
+want to inspect. [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
 
 ```sh
+git clone https://github.com/mamachanko/vps.git
+cd vps
 uv sync --locked
 uv run vps disk
+```
+
+Keep using `uv run vps` from the checkout. To use `vps` from any directory,
+run `uv tool install .` from the checkout. Use `uv run vps --help` to list
+commands.
+
+## Disk usage
+
+```sh
+uv run vps disk /var
 uv run vps disk /var --top 10
 uv run vps disk /var --top 10 --json
 ```
 
-To install the command on your PATH, run `uv tool install .` from the checkout.
-Run `vps --help`, `vps disk --help`, or `vps audit --help` for command options.
+`disk [PATH]` shows capacity for the filesystem that contains the path.
+The default is `/`. Pass a directory with `--top N` to rank its largest
+immediate entries, including their descendants. A spinner on an interactive
+terminal shows that the scan is still running.
 
-## Disk usage
+The ranking uses allocated space, so a sparse file counts for the blocks it
+occupies. The scan includes hidden entries, skips other filesystems, and
+counts each hard link target once. The first top-level entry by name gets
+credit for the allocation. If you pass a symlink as the initial path, the
+scan follows it to its target. Inside the tree it counts each symlink itself.
 
-`vps disk [PATH]` reports capacity for the filesystem containing `PATH`.
-The default path is `/`. You can pass a file or a directory. The capacity
-report includes space reserved from
-ordinary users where the filesystem exposes it. The usage percentage compares
-used space with the sum of used and user-available space, as in `df`.
-
-`--top N` scans a directory and ranks up to `N` of its immediate children.
-Each row includes the allocated disk space for that entry and its descendants.
-This measures the space a sparse file occupies on disk. The scan includes
-hidden entries and skips entries on other devices. You can pass a symlink as
-the root path. Inside the tree, the scan counts the space occupied by each
-symlink itself. When multiple names share an inode, the first top-level
-entry by name gets credit for the allocation.
-
-## Disk JSON output
-
-`--json` writes one report to stdout and sends diagnostics to stderr.
-Sizes are integer bytes and `path` is absolute.
-
-| Field | Meaning |
-| --- | --- |
-| `schema_version` | Report schema version. Currently `1`. |
-| `path` | Requested path. |
-| `filesystem` | `total_bytes`, `used_bytes`, `available_bytes`, `reserved_bytes`, and `used_percent`. |
-| `scan` | `null` without `--top`. Otherwise contains ranked `entries`, `skipped_other_devices`, `issue_count`, and `issues`. |
-
-Each scan entry has a `name` and `allocated_bytes`. Each issue sample has a
-`path` and `message`. The report includes up to five issue samples.
-
-| Exit code | Meaning |
-| --- | --- |
-| `0` | Complete report. |
-| `1` | Inspection failed. |
-| `2` | Invalid command arguments. |
-| `3` | The scan skipped entries it could not inspect. The report contains partial results. |
+The capacity percentage compares used bytes with the sum of used and
+user-available bytes, as in `df`. The report shows reserved space when the
+filesystem exposes it. If part of the tree is unreadable, the report still
+includes the entries it could inspect and exits with code `3`.
 
 ## Security audit
 
-Run the audit on the Linux VPS you want to check. `vps audit` runs OpenSCAP
-with the installed CIS Level 1 Server profile for that distribution when
-available. It needs the `oscap` executable and a local SCAP data stream that
-matches the VPS distribution and release.
+If `oscap` is on your `PATH` and the matching SCAP data stream is installed
+in a system SCAP directory, run `uv run vps audit` on the Linux server. To run
+without OpenSCAP, use the [quick check](#quick-check).
 
-On Ubuntu, install the scanner with `sudo apt install openscap-scanner`.
-Install the matching SCAP Security Guide content or get the data stream
-from a ComplianceAsCode release. For Ubuntu 24.04, use `ssg-ubuntu2404-ds.xml`.
-To use a local copy as shown below, save that file in the repository root. [Ubuntu scanner package](https://packages.ubuntu.com/noble/openscap-scanner) · [ComplianceAsCode releases](https://github.com/ComplianceAsCode/content/releases)
+### Set up OpenSCAP on Ubuntu 24.04
 
-```sh
-uv run vps audit
-uv run vps audit --json
-uv run vps audit --all
-```
-
-Pass `--datastream` if the file is outside a system SCAP content directory.
+Install the scanner and download benchmark content for Ubuntu 24.04.
+The example uses ComplianceAsCode content version `0.1.82`, which includes
+the CIS Level 1 Server profile. [Ubuntu scanner package](https://packages.ubuntu.com/noble/openscap-scanner) · [ComplianceAsCode release](https://github.com/ComplianceAsCode/content/releases/tag/v0.1.82)
 
 ```sh
-uv run vps audit --datastream ./ssg-ubuntu2404-ds.xml
+sudo apt update
+sudo apt install openscap-scanner curl unzip
+
+scap_dir=$(mktemp -d)
+curl -fL -o "$scap_dir/content.zip" \
+  https://github.com/ComplianceAsCode/content/releases/download/v0.1.82/scap-security-guide-0.1.82.zip
+unzip -j "$scap_dir/content.zip" '*/ssg-ubuntu2404-ds.xml' -d "$scap_dir"
+
+uv run vps audit --datastream "$scap_dir/ssg-ubuntu2404-ds.xml"
 ```
 
-The terminal report shows the evaluated profile, coverage, and up to six
-findings that need attention. Failed checks appear first, with the highest
-severity at the top. Evidence shows what OpenSCAP reported. Remediation comes
-from the benchmark. Hints give a next step when a check needs manual review
-or the benchmark lacks remediation text. Use `--all` to see every selected
-check. Use `--profile ID` to choose another profile from `oscap info DATASTREAM`.
+Use a data stream built for your distribution and release. If you supply one
+with a different profile, list its profiles with `oscap info DATASTREAM`
+and pass `--profile ID`. Use `--oscap PATH` if the scanner is outside your
+`PATH`.
 
-Run with root privileges for checks that need access to protected files
-and live system settings. After `uv sync --locked`, use `sudo .venv/bin/vps audit`
-from a trusted checkout. Pass `--datastream` as needed. The audit reads local
-settings and reports results. It leaves system settings untouched. Rules that
-need script-based check engines appear as unverified. [OpenSCAP user manual](https://github.com/OpenSCAP/openscap/blob/main/docs/manual/manual.adoc)
+Run with root privileges to cover protected files and live settings. After
+`uv sync --locked`, run the installed entry point from a trusted checkout.
+The command below uses the data stream downloaded above.
+
+```sh
+sudo .venv/bin/vps audit --datastream "$scap_dir/ssg-ubuntu2404-ds.xml"
+```
+
+### Read the report
+
+This excerpt comes from an Ubuntu 24.04 container scan.
+
+```text
+ACTION NEEDED  OpenSCAP / Ubuntu 24.04.5 LTS / CIS Level 1 Server v1.0.0
+8a4fb0ac9419 / OpenSCAP 1.3.9 / Content 0.1.82 / Root
+6 failed   2 unverified   130 passed   270 not applicable
+
+FAIL         Install pam_pwquality Package                                MEDIUM
+             CIS 5.3.1.3
+             Evidence     OpenSCAP supplied no rule-specific evidence.
+             Remediation  The libpam-pwquality package can be installed with the
+                          following command:
+
+                          $ apt-get install libpam-pwquality
+```
+
+The terminal report shows up to six findings, with failed rules first and
+the highest severity first within each group. **Evidence** comes from
+OpenSCAP. **Remediation** comes from the benchmark. A **Hint** suggests a
+follow-up if a rule needs manual review or lacks remediation guidance.
+
+Add `--all` to see every selected rule or `--json` to get the full report as JSON.
+Rules that need a script-based check engine appear as unverified. Review
+coverage alongside the verdict. [OpenSCAP result definitions](https://static.open-scap.org/openscap-1.4.1/oscap_user_manual.html#_evaluating_xccdf)
 
 ### Quick check
 
-Run `uv run vps audit --fast` for the five local checks. The quick check
-works without an OpenSCAP installation.
+```sh
+uv run vps audit --fast
+```
 
-| Check | Evidence |
+The quick check reads global OpenSSH settings for root and password login,
+TCP and UDP listeners bound beyond loopback, live nftables input policy,
+and the effective APT unattended-upgrade schedule where available. It uses
+your current permissions.
+
+Review provider firewall rules, SSH `Match` overrides, and recent security
+updates separately. Keep a working SSH session or provider console open
+when validating SSH or firewall changes. [Ubuntu OpenSSH guide](https://ubuntu.com/server/docs/how-to/security/openssh-server/) · [Ubuntu security updates](https://documentation.ubuntu.com/security/security-updates/)
+
+## JSON and exit codes
+
+Both commands accept `--json`. They send one versioned JSON report to stdout
+and diagnostics to stderr. Each mode has its own schema with `schema_version`
+set to `1`.
+
+| Mode | Report fields |
 | --- | --- |
-| SSH root and password login | Global OpenSSH settings from `sshd -T`. |
-| Network listeners | Local TCP and UDP sockets bound beyond loopback. |
-| Inbound firewall | Live nftables default-drop input policy for IPv4 and IPv6. |
-| Automatic updates | Effective APT unattended-upgrade schedule, where available. |
+| `disk --json` | Absolute `path`, `filesystem` capacity, and optional `scan` |
+| `audit --json` | Host and profile, scanner and content versions, privileges, verdict, counts by XCCDF status, and all selected rule results |
+| `audit --fast --json` | Host, verdict, counts by quick-check status, findings, and scope |
 
-The quick check uses your current permissions. Check the provider firewall
-and SSH `Match` overrides separately. Review installed security updates and
-recent update runs on the host. Keep a working login or provider console open
-while you validate SSH or firewall changes. [OpenSSH server guide](https://ubuntu.com/server/docs/how-to/security/openssh-server/) · [nftables policies](https://netfilter.org/projects/nftables/manpage.html) · [Ubuntu security updates](https://documentation.ubuntu.com/security/security-updates/)
+Disk sizes are integer bytes. `filesystem` contains `total_bytes`,
+`used_bytes`, `available_bytes`, `reserved_bytes`, and `used_percent`.
+Without `--top`, `scan` is `null`. A directory scan includes ranked
+`entries` with `name` and `allocated_bytes`, `skipped_other_devices`,
+`issue_count`, and up to five `issues` with a `path` and `message`.
 
-### Audit JSON and exit codes
-
-`vps audit --json` writes a versioned OpenSCAP report to stdout. It includes
-the scanner, profile, and content versions, whether the scan ran with root
-privileges, and all selected checks. The `summary` counts the original XCCDF
-statuses. Each finding includes an ID, title, references, status, severity,
+OpenSCAP findings include the rule ID, title, references, status, severity,
 evidence, and optional remediation and hint text.
 
-Use `vps audit --fast --json` for the five-check report schema. It contains
-the quick verdict, status counts, findings, and scope. Both modes write
-diagnostics to stderr.
-
-| Exit code | Meaning |
-| --- | --- |
-| `0` | The assessed profile or quick checks passed. |
-| `1` | The audit found a failure or a quick check needs review. |
-| `2` | The command could not complete. Check the arguments, platform, and OpenSCAP setup. |
-| `3` | The audit has incomplete coverage and reported no failures. |
+| Code | `disk` | `audit` and `audit --fast` |
+| --- | --- | --- |
+| `0` | Complete report | Profile or quick checks passed |
+| `1` | Inspection failed | A check failed or needs review |
+| `2` | Invalid arguments | Invalid arguments, unsupported platform, or OpenSCAP setup or execution error |
+| `3` | Partial scan | Incomplete coverage with no failed checks |
 
 ## Development
 
-See [AGENTS.md](AGENTS.md) for module boundaries and local checks. GitHub Actions
-runs lint, format, tests, and packaging checks on Linux and macOS.
+```sh
+uv sync --locked
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked pytest
+uv build
+```
+
+See [AGENTS.md](AGENTS.md) for module boundaries and the
+[verification guide](.agents/skills/verify/SKILL.md) for checks through the
+installed CLI. [GitHub Actions](.github/workflows/ci.yml) runs the checks on
+Linux and macOS.
+
+[MIT license](LICENSE)
