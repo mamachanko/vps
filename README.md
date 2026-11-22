@@ -1,7 +1,7 @@
 # vps
 
-`vps` is a read-only command-line utility for Unix servers. Use it to check how
-much space a filesystem has left and find the largest entries in a directory.
+`vps` is a read-only command-line utility for Unix servers. Check disk usage
+or review the hardening baseline on a Linux VPS.
 
 ## Run from a checkout
 
@@ -34,7 +34,7 @@ the root path. Inside the tree, the scan counts the space occupied by each
 symlink itself. When multiple names share an inode, the first top-level
 entry by name gets credit for the allocation.
 
-## Machine output
+## Disk JSON output
 
 `--json` writes one report to stdout and sends diagnostics to stderr.
 Sizes are integer bytes and `path` is absolute.
@@ -55,6 +55,42 @@ Each scan entry has a `name` and `allocated_bytes`. Each issue sample has a
 | `1` | Inspection failed. |
 | `2` | Invalid command arguments. |
 | `3` | The scan skipped entries it could not inspect. The report contains partial results. |
+
+## Security audit
+
+Run the audit on the Linux VPS you want to check.
+
+```sh
+uv run vps audit
+uv run vps audit --json
+```
+
+The report puts fixes first. Review items need a judgment about the host's
+intended setup. Unverified items show where the audit needs more evidence.
+Each finding shows what the audit observed and includes a next step where
+one applies.
+
+| Check | Evidence |
+| --- | --- |
+| SSH root and password login | Global OpenSSH settings from `sshd -T`. |
+| Network listeners | Local TCP and UDP sockets bound beyond loopback. |
+| Inbound firewall | Live nftables default-drop input policy for IPv4 and IPv6. |
+| Automatic updates | Effective APT unattended-upgrade schedule, where available. |
+
+The audit runs locally with your current permissions. Check the provider
+firewall and SSH `Match` overrides separately. Review the installed security
+updates and recent update runs on the host. Keep a working login or provider
+console open while you validate SSH or firewall changes. [OpenSSH server guide](https://ubuntu.com/server/docs/how-to/security/openssh-server/) · [nftables policies](https://netfilter.org/projects/nftables/manpage.html) · [Ubuntu security updates](https://documentation.ubuntu.com/security/security-updates/)
+
+`--json` writes a versioned report with the verdict, counts by status, and
+findings. Each finding has an ID, title, status, evidence, and optional hint.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | All baseline checks passed. |
+| `1` | At least one finding needs a fix or review. |
+| `2` | Invalid arguments or unsupported platform. |
+| `3` | The audit could not verify at least one check. All observed checks passed. |
 
 ## Development
 

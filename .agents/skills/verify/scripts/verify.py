@@ -3,6 +3,7 @@ import argparse
 import errno
 import json
 import os
+import platform
 import pty
 import select
 import subprocess
@@ -50,7 +51,11 @@ class Driver:
         self.fixture = fixture
 
     def run(
-        self, label: str, *args: str | Path, terminal: bool = False, code: int = 0
+        self,
+        label: str,
+        *args: str | Path,
+        terminal: bool = False,
+        code: int | tuple[int, ...] = 0,
     ) -> tuple[bytes, bytes]:
         argv = [str(VPS), *map(str, args)]
         env = os.environ.copy()
@@ -111,8 +116,9 @@ class Driver:
             (self.evidence / f"{label}.json").write_text(
                 json.dumps(record, indent=2) + "\n", encoding="utf-8"
             )
+        expected_codes = (code,) if isinstance(code, int) else code
         require(
-            record["exit_code"] == code,
+            record["exit_code"] in expected_codes,
             f"{label}: expected exit {code}, got {record['exit_code']}. See {stderr}.",
         )
         return stdout.read_bytes(), stderr.read_bytes()
@@ -314,12 +320,77 @@ def errors(driver: Driver) -> None:
     )
 
 
+def audit(driver: Driver) -> None:
+    if platform.system() != "Linux":
+        stdout, stderr = driver.run("audit-unsupported", "audit", "--json", code=2)
+        require(
+            not stdout and b"requires Linux" in stderr, "Expected a Linux diagnostic."
+        )
+        return
+
+    exits = {
+        "action_needed": 1,
+        "review_needed": 1,
+        "incomplete": 3,
+        "baseline_passed": 0,
+    }
+    stdout, stderr = driver.run("audit-json", "audit", "--json", code=(0, 1, 3))
+    report = json.loads(stdout)
+    require(
+        not stderr and report["schema_version"] == 1,
+        "Expected a versioned JSON report on stdout and empty redirected stderr.",
+    )
+    checks = {
+        "ssh_root_login",
+        "ssh_password_auth",
+        "network_listeners",
+        "firewall_input_policy",
+        "automatic_updates",
+    }
+    findings = report["findings"]
+    require(
+        len(findings) == len(checks)
+        and {finding["id"] for finding in findings} == checks,
+        "Expected all five baseline checks.",
+    )
+    statuses = ("action", "review", "unknown", "pass")
+    ordered = [statuses.index(finding["status"]) for finding in findings]
+    require(ordered == sorted(ordered), "Findings are out of priority order.")
+    require(
+        all(
+            finding["evidence"] and (finding["status"] == "pass" or finding["hint"])
+            for finding in findings
+        ),
+        "A finding lacks evidence or a next step.",
+    )
+    require(
+        report["summary"]
+        == {status: ordered.count(i) for i, status in enumerate(statuses)},
+        "Summary counts differ from the findings.",
+    )
+    recorded = json.loads((driver.evidence / "audit-json.json").read_bytes())
+    require(
+        recorded["exit_code"] == exits[report["verdict"]],
+        "Audit exit code differs from its verdict.",
+    )
+
+    stdout, stderr = driver.run("audit-human", "audit", terminal=True, code=(0, 1, 3))
+    require(
+        b"VPS security audit" in stdout
+        and b"Local Linux baseline" in stdout
+        and b"Checking server hardening..." in stderr
+        and b"\x1b[?25h" in stderr,
+        "Expected a scoped terminal report and cursor restoration after the audit.",
+    )
+
+
 JOURNEYS = {
     "doctor": doctor,
     "capacity": capacity,
     "ranking": ranking,
     "progress": progress,
     "errors": errors,
+    "audit": audit,
 }
 
 

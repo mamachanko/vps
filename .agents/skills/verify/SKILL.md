@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Verify user-facing vps disk behavior through its installed command. Use after changes to capacity reports, directory rankings, scan status, JSON output, or exit codes.
+description: Verify vps through its installed command. Use after changes to disk capacity, directory ranking, scan status, or the Linux hardening audit.
 ---
 
 # Verify vps
@@ -68,5 +68,6 @@ survives cleanup. Each invocation creates both directories independently.
 ## Helpers
 
 [verify.py](scripts/verify.py) accepts `doctor`, `capacity`, `ranking`,
-`progress`, or `errors`. Run it through the checkout's uv environment as
-shown above. It exits `1` when an expected result or precondition fails.
+`progress`, `errors`, or `audit`. Run it through the checkout's uv
+environment as shown above. The driver exits `1` when an expected result or
+precondition fails.

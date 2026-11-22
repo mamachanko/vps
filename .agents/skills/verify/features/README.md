@@ -27,3 +27,4 @@ attempted journey and the missing precondition.
 - [Directory ranking](ranking.md) covers scan limits and allocated disk space.
 - [Scan status](progress.md) covers interactive stderr and redirected output.
 - [Errors and partial results](errors.md) covers exit codes and recoverable scan errors.
+- [Security audit](audit.md) covers the hardening report, verdict, and actionable findings.

@@ -6,18 +6,7 @@ from rich.table import Table
 from rich.text import Text
 
 from vps.disk import DiskReport
-
-
-def terminal_text(value: str, encoding: str | None = "utf-8") -> str:
-    """Escape characters that could change terminal layout or execute controls."""
-    escaped = "".join(
-        character
-        if character.isprintable()
-        else character.encode("unicode_escape").decode("ascii")
-        for character in value
-    )
-    encoding = encoding or "utf-8"
-    return escaped.encode(encoding, errors="backslashreplace").decode(encoding)
+from vps.terminal import terminal_text
 
 
 def report_json(report: DiskReport) -> str:

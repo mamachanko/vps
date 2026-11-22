@@ -1,5 +1,5 @@
+import platform
 import sys
-from contextlib import nullcontext
 from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated
@@ -7,8 +7,11 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
+from vps.audit import Verdict, collect_audit
+from vps.audit_output import audit_json, print_audit
 from vps.disk import inspect_disk
-from vps.disk_output import print_report, report_json, terminal_text
+from vps.disk_output import print_report, report_json
+from vps.terminal import terminal_status, terminal_text
 
 app = typer.Typer(
     name="vps",
@@ -55,14 +58,8 @@ def disk(
     ] = False,
 ) -> None:
     """Show filesystem capacity, with an optional allocated-space scan."""
-    progress_console = Console(stderr=True)
-    progress = (
-        progress_console.status("Scanning disk usage...", spinner="line")
-        if top is not None and sys.stderr.isatty() and progress_console.is_interactive
-        else nullcontext()
-    )
     try:
-        with progress:
+        with terminal_status("Scanning disk usage...", active=top is not None):
             report = inspect_disk(path, top)
     except OSError as error:
         if top is not None and isinstance(error, NotADirectoryError):
@@ -81,3 +78,34 @@ def disk(
         noun = "entry" if count == 1 else "entries"
         typer.echo(f"Warning: partial scan. Could not read {count} {noun}.", err=True)
         raise typer.Exit(3)
+
+
+@app.command()
+def audit(
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print a machine-readable report.")
+    ] = False,
+) -> None:
+    """Check a Linux VPS for common hardening gaps."""
+    if platform.system() != "Linux":
+        typer.echo(
+            "Security audit requires Linux. Run vps audit on the VPS you want to check.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    with terminal_status("Checking server hardening..."):
+        report = collect_audit()
+
+    if json_output:
+        typer.echo(audit_json(report))
+    else:
+        print_audit(report, Console())
+    raise typer.Exit(
+        {
+            Verdict.BASELINE_PASSED: 0,
+            Verdict.ACTION_NEEDED: 1,
+            Verdict.REVIEW_NEEDED: 1,
+            Verdict.INCOMPLETE: 3,
+        }[report.verdict]
+    )
