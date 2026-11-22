@@ -79,9 +79,10 @@ def print_audit(report: AuditReport, console: Console) -> None:
         badge, _, color = STATUS_STYLES[finding.status]
         detail = Text()
         detail.append(terminal_text(finding.title, console.encoding), style="bold")
-        detail.append("\n" + terminal_text(finding.evidence, console.encoding))
+        detail.append("\nEvidence   ", style="bold")
+        detail.append(terminal_text(finding.evidence, console.encoding))
         if finding.hint:
-            detail.append("\nNext  ", style="bold")
+            detail.append("\n\nNext step  ", style="bold cyan")
             detail.append(terminal_text(finding.hint, console.encoding))
         label = Text(badge, style=f"bold {color}")
         if compact:
