@@ -62,7 +62,7 @@ def print_audit(report: AuditReport, console: Console) -> None:
                 Text(),
                 summary,
             ),
-            title="VPS security audit",
+            title="VPS quick audit",
             title_align="left",
             border_style=verdict_color,
             box=box.ASCII if console.options.ascii_only else box.ROUNDED,

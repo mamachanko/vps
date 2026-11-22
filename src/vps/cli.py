@@ -11,6 +11,8 @@ from vps.audit import Verdict, collect_audit
 from vps.audit_output import audit_json, print_audit
 from vps.disk import inspect_disk
 from vps.disk_output import print_report, report_json
+from vps.openscap import OpenScapError, assess
+from vps.openscap_output import openscap_json, print_openscap
 from vps.terminal import terminal_status, terminal_text
 
 app = typer.Typer(
@@ -82,11 +84,28 @@ def disk(
 
 @app.command()
 def audit(
+    fast: Annotated[
+        bool, typer.Option("--fast", help="Run five local checks without OpenSCAP.")
+    ] = False,
     json_output: Annotated[
         bool, typer.Option("--json", help="Print a machine-readable report.")
     ] = False,
+    show_all: Annotated[
+        bool, typer.Option("--all", help="Show every selected OpenSCAP check.")
+    ] = False,
+    datastream: Annotated[
+        Path | None,
+        typer.Option("--datastream", help="Path to a local SCAP data stream."),
+    ] = None,
+    profile: Annotated[
+        str | None,
+        typer.Option("--profile", help="OpenSCAP profile ID or unique suffix."),
+    ] = None,
+    oscap: Annotated[
+        Path | None, typer.Option("--oscap", help="Path to the oscap executable.")
+    ] = None,
 ) -> None:
-    """Check a Linux VPS for common hardening gaps."""
+    """Assess Linux hardening with OpenSCAP."""
     if platform.system() != "Linux":
         typer.echo(
             "Security audit requires Linux. Run vps audit on the VPS you want to check.",
@@ -94,18 +113,43 @@ def audit(
         )
         raise typer.Exit(2)
 
-    with terminal_status("Checking server hardening..."):
-        report = collect_audit()
-
-    if json_output:
-        typer.echo(audit_json(report))
+    if fast:
+        if (
+            show_all
+            or datastream is not None
+            or profile is not None
+            or oscap is not None
+        ):
+            raise typer.BadParameter(
+                "Use --all, --datastream, --profile, and --oscap with OpenSCAP mode.",
+                param_hint="--fast",
+            )
+        with terminal_status("Checking server hardening..."):
+            quick_report = collect_audit()
+        if json_output:
+            typer.echo(audit_json(quick_report))
+        else:
+            print_audit(quick_report, Console())
+        verdict = quick_report.verdict
     else:
-        print_audit(report, Console())
+        try:
+            with terminal_status("Running OpenSCAP assessment..."):
+                report = assess(oscap=oscap, datastream=datastream, profile=profile)
+        except OpenScapError as error:
+            diagnostic = terminal_text(str(error), sys.stderr.encoding)
+            typer.echo(f"OpenSCAP audit: {diagnostic}", err=True)
+            raise typer.Exit(2) from error
+        if json_output:
+            typer.echo(openscap_json(report))
+        else:
+            print_openscap(report, Console(), show_all=show_all)
+        verdict = report.verdict
+
     raise typer.Exit(
         {
             Verdict.BASELINE_PASSED: 0,
             Verdict.ACTION_NEEDED: 1,
             Verdict.REVIEW_NEEDED: 1,
             Verdict.INCOMPLETE: 3,
-        }[report.verdict]
+        }[verdict]
     )

@@ -11,13 +11,21 @@ import sys
 import tempfile
 import time
 import tomllib
+from collections import Counter
 from pathlib import Path
 from typing import BinaryIO
 
 REPO = Path(__file__).resolve().parents[4]
 VPS = Path(sys.executable).with_name("vps")
 TIMEOUT = 20
+AUDIT_TIMEOUT = 180
 STATUS = b"Scanning disk usage..."
+AUDIT_EXIT_CODES = {
+    "action_needed": 1,
+    "review_needed": 1,
+    "incomplete": 3,
+    "baseline_passed": 0,
+}
 
 
 class VerificationError(Exception):
@@ -42,7 +50,7 @@ def read_pty(master: int, transcript: BinaryIO, deadline: float) -> None:
         if not chunk:
             return
         transcript.write(chunk)
-    raise TimeoutError(f"Terminal did not close within {TIMEOUT} seconds.")
+    raise TimeoutError("Terminal did not close before the deadline.")
 
 
 class Driver:
@@ -56,6 +64,7 @@ class Driver:
         *args: str | Path,
         terminal: bool = False,
         code: int | tuple[int, ...] = 0,
+        timeout: int = TIMEOUT,
     ) -> tuple[bytes, bytes]:
         argv = [str(VPS), *map(str, args)]
         env = os.environ.copy()
@@ -75,7 +84,7 @@ class Driver:
                 if terminal:
                     master, slave = pty.openpty()
                     try:
-                        deadline = time.monotonic() + TIMEOUT
+                        deadline = time.monotonic() + timeout
                         with subprocess.Popen(
                             argv,
                             cwd=REPO,
@@ -108,7 +117,7 @@ class Driver:
                         stdin=subprocess.DEVNULL,
                         stdout=out,
                         stderr=err,
-                        timeout=TIMEOUT,
+                        timeout=timeout,
                         check=False,
                     )
                     record["exit_code"] = process.returncode
@@ -320,21 +329,19 @@ def errors(driver: Driver) -> None:
     )
 
 
-def audit(driver: Driver) -> None:
+def audit_fast(driver: Driver) -> None:
     if platform.system() != "Linux":
-        stdout, stderr = driver.run("audit-unsupported", "audit", "--json", code=2)
+        stdout, stderr = driver.run(
+            "audit-unsupported", "audit", "--fast", "--json", code=2
+        )
         require(
             not stdout and b"requires Linux" in stderr, "Expected a Linux diagnostic."
         )
         return
 
-    exits = {
-        "action_needed": 1,
-        "review_needed": 1,
-        "incomplete": 3,
-        "baseline_passed": 0,
-    }
-    stdout, stderr = driver.run("audit-json", "audit", "--json", code=(0, 1, 3))
+    stdout, stderr = driver.run(
+        "audit-json", "audit", "--fast", "--json", code=(0, 1, 3)
+    )
     report = json.loads(stdout)
     require(
         not stderr and report["schema_version"] == 1,
@@ -370,18 +377,84 @@ def audit(driver: Driver) -> None:
     )
     recorded = json.loads((driver.evidence / "audit-json.json").read_bytes())
     require(
-        recorded["exit_code"] == exits[report["verdict"]],
+        recorded["exit_code"] == AUDIT_EXIT_CODES[report["verdict"]],
         "Audit exit code differs from its verdict.",
     )
 
-    stdout, stderr = driver.run("audit-human", "audit", terminal=True, code=(0, 1, 3))
+    stdout, stderr = driver.run(
+        "audit-human", "audit", "--fast", terminal=True, code=(0, 1, 3)
+    )
     require(
-        b"VPS security audit" in stdout
+        b"VPS quick audit" in stdout
         and b"Local Linux baseline" in stdout
         and b"Checking server hardening..." in stderr
         and b"\x1b[?25h" in stderr,
         "Expected a scoped terminal report and cursor restoration after the audit.",
     )
+
+
+def audit(driver: Driver, *options: str) -> None:
+    if platform.system() != "Linux":
+        stdout, stderr = driver.run("audit-unsupported", "audit", "--json", code=2)
+        require(
+            not stdout and b"requires Linux" in stderr, "Expected a Linux diagnostic."
+        )
+        return
+
+    stdout, stderr = driver.run(
+        "openscap-json",
+        "audit",
+        *options,
+        "--json",
+        code=(0, 1, 3),
+        timeout=AUDIT_TIMEOUT,
+    )
+    report = json.loads(stdout)
+    findings = report["findings"]
+    require(
+        not stderr
+        and report["schema_version"] == 1
+        and report["engine"] == "openscap"
+        and report["engine_version"]
+        and report["profile"]["id"],
+        "Expected a versioned OpenSCAP report identifying the scanner and profile.",
+    )
+    require(
+        bool(findings)
+        and all(f["evidence"] and f["status"] != "notselected" for f in findings)
+        and report["summary"] == Counter(f["status"] for f in findings),
+        "Expected selected OpenSCAP findings with evidence and matching counts.",
+    )
+    recorded = json.loads((driver.evidence / "openscap-json.json").read_bytes())
+    require(
+        recorded["exit_code"] == AUDIT_EXIT_CODES[report["verdict"]],
+        "Audit exit code differs from its verdict.",
+    )
+
+    stdout, stderr = driver.run(
+        "openscap-human",
+        "audit",
+        *options,
+        terminal=True,
+        code=(0, 1, 3),
+        timeout=AUDIT_TIMEOUT,
+    )
+    require(
+        b"OpenSCAP" in stdout
+        and any(
+            verdict in stdout
+            for verdict in (b"ACTION NEEDED", b"AUDIT INCOMPLETE", b"PROFILE PASSED")
+        )
+        and b"unverified" in stdout
+        and b"Running OpenSCAP assessment..." in stderr
+        and b"\x1b[?25h" in stderr,
+        "Expected verdict, rule counts, and restored terminal cursor after the OpenSCAP audit.",
+    )
+    if b"ACTION NEEDED" in stdout:
+        require(
+            b"FAIL" in stdout and b"Evidence" in stdout,
+            "Expected evidence for a failed rule in the Findings brief.",
+        )
 
 
 JOURNEYS = {
@@ -391,6 +464,7 @@ JOURNEYS = {
     "progress": progress,
     "errors": errors,
     "audit": audit,
+    "audit-fast": audit_fast,
 }
 
 
@@ -399,14 +473,24 @@ def main() -> int:
         description="Drive the installed vps CLI and save evidence."
     )
     parser.add_argument("journey", choices=JOURNEYS)
+    for option in ("oscap", "datastream", "profile"):
+        parser.add_argument(f"--{option}")
     args = parser.parse_args()
+    scan_options = [
+        arg
+        for option in ("oscap", "datastream", "profile")
+        if (value := getattr(args, option)) is not None
+        for arg in (f"--{option}", value)
+    ]
+    if scan_options and args.journey != "audit":
+        parser.error("Scanner options require the audit journey.")
     evidence = Path(tempfile.mkdtemp(prefix="vps-evidence-"))
     print(f"Evidence: {evidence}", flush=True)
     with tempfile.TemporaryDirectory(prefix="vps-fixture-") as directory:
         record = {"journey": args.journey, "fixture": directory, "verdict": "failed"}
         try:
             require(VPS.is_file(), "Run uv sync --locked before driving vps.")
-            JOURNEYS[args.journey](Driver(evidence, Path(directory)))
+            JOURNEYS[args.journey](Driver(evidence, Path(directory)), *scan_options)
             record["verdict"] = "passed"
         except (
             VerificationError,

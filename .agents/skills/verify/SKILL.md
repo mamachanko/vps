@@ -68,6 +68,7 @@ survives cleanup. Each invocation creates both directories independently.
 ## Helpers
 
 [verify.py](scripts/verify.py) accepts `doctor`, `capacity`, `ranking`,
-`progress`, `errors`, or `audit`. Run it through the checkout's uv
-environment as shown above. The driver exits `1` when an expected result or
-precondition fails.
+`progress`, `errors`, `audit`, and `audit-fast`. Run it through the checkout's
+uv environment as shown above. The `audit` journey uses installed OpenSCAP
+and supports `--oscap`, `--datastream`, and `--profile`. The driver exits `1`
+when an expected result or precondition fails.

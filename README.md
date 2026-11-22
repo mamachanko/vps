@@ -16,7 +16,7 @@ uv run vps disk /var --top 10 --json
 ```
 
 To install the command on your PATH, run `uv tool install .` from the checkout.
-Run `vps --help` or `vps disk --help` for command options.
+Run `vps --help`, `vps disk --help`, or `vps audit --help` for command options.
 
 ## Disk usage
 
@@ -58,17 +58,45 @@ Each scan entry has a `name` and `allocated_bytes`. Each issue sample has a
 
 ## Security audit
 
-Run the audit on the Linux VPS you want to check.
+Run the audit on the Linux VPS you want to check. `vps audit` runs OpenSCAP
+with the installed CIS Level 1 Server profile for that distribution when
+available. It needs the `oscap` executable and a local SCAP data stream that
+matches the VPS distribution and release.
+
+On Ubuntu, install the scanner with `sudo apt install openscap-scanner`.
+Install the matching SCAP Security Guide content or get the data stream
+from a ComplianceAsCode release. For Ubuntu 24.04, use `ssg-ubuntu2404-ds.xml`.
+To use a local copy as shown below, save that file in the repository root. [Ubuntu scanner package](https://packages.ubuntu.com/noble/openscap-scanner) · [ComplianceAsCode releases](https://github.com/ComplianceAsCode/content/releases)
 
 ```sh
 uv run vps audit
 uv run vps audit --json
+uv run vps audit --all
 ```
 
-The report puts fixes first. Review items need a judgment about the host's
-intended setup. Unverified items show where the audit needs more evidence.
-Each finding shows what the audit observed and includes a next step where
-one applies.
+Pass `--datastream` if the file is outside a system SCAP content directory.
+
+```sh
+uv run vps audit --datastream ./ssg-ubuntu2404-ds.xml
+```
+
+The terminal report shows the evaluated profile, coverage, and up to six
+findings that need attention. Failed checks appear first, with the highest
+severity at the top. Evidence shows what OpenSCAP reported. Remediation comes
+from the benchmark. Hints give a next step when a check needs manual review
+or the benchmark lacks remediation text. Use `--all` to see every selected
+check. Use `--profile ID` to choose another profile from `oscap info DATASTREAM`.
+
+Run with root privileges for checks that need access to protected files
+and live system settings. After `uv sync --locked`, use `sudo .venv/bin/vps audit`
+from a trusted checkout. Pass `--datastream` as needed. The audit reads local
+settings and reports results. It leaves system settings untouched. Rules that
+need script-based check engines appear as unverified. [OpenSCAP user manual](https://github.com/OpenSCAP/openscap/blob/main/docs/manual/manual.adoc)
+
+### Quick check
+
+Run `uv run vps audit --fast` for the five local checks. The quick check
+works without an OpenSCAP installation.
 
 | Check | Evidence |
 | --- | --- |
@@ -77,20 +105,29 @@ one applies.
 | Inbound firewall | Live nftables default-drop input policy for IPv4 and IPv6. |
 | Automatic updates | Effective APT unattended-upgrade schedule, where available. |
 
-The audit runs locally with your current permissions. Check the provider
-firewall and SSH `Match` overrides separately. Review the installed security
-updates and recent update runs on the host. Keep a working login or provider
-console open while you validate SSH or firewall changes. [OpenSSH server guide](https://ubuntu.com/server/docs/how-to/security/openssh-server/) · [nftables policies](https://netfilter.org/projects/nftables/manpage.html) · [Ubuntu security updates](https://documentation.ubuntu.com/security/security-updates/)
+The quick check uses your current permissions. Check the provider firewall
+and SSH `Match` overrides separately. Review installed security updates and
+recent update runs on the host. Keep a working login or provider console open
+while you validate SSH or firewall changes. [OpenSSH server guide](https://ubuntu.com/server/docs/how-to/security/openssh-server/) · [nftables policies](https://netfilter.org/projects/nftables/manpage.html) · [Ubuntu security updates](https://documentation.ubuntu.com/security/security-updates/)
 
-`--json` writes a versioned report with the verdict, counts by status, and
-findings. Each finding has an ID, title, status, evidence, and optional hint.
+### Audit JSON and exit codes
+
+`vps audit --json` writes a versioned OpenSCAP report to stdout. It includes
+the scanner, profile, and content versions, whether the scan ran with root
+privileges, and all selected checks. The `summary` counts the original XCCDF
+statuses. Each finding includes an ID, title, references, status, severity,
+evidence, and optional remediation and hint text.
+
+Use `vps audit --fast --json` for the five-check report schema. It contains
+the quick verdict, status counts, findings, and scope. Both modes write
+diagnostics to stderr.
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | All baseline checks passed. |
-| `1` | At least one finding needs a fix or review. |
-| `2` | Invalid arguments or unsupported platform. |
-| `3` | The audit could not verify at least one check. All observed checks passed. |
+| `0` | The assessed profile or quick checks passed. |
+| `1` | The audit found a failure or a quick check needs review. |
+| `2` | The command could not complete. Check the arguments, platform, and OpenSCAP setup. |
+| `3` | The audit has incomplete coverage and reported no failures. |
 
 ## Development
 
